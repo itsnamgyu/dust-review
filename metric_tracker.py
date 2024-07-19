@@ -10,42 +10,39 @@ from util.convert import categorial_to_continuous, continuous_to_categorical
 import torch
 
 
-class DictConfig(omegaconfg.DictConfig):
+class DictConfig(omegaconf.DictConfig):
     n_regions: int
 
 
 
-class MetricsCalculator:
+class MetricTracker:
     def __init__(
         self,
         args: DictConfig
     ) -> None:
-        metric_regression_num = 4  # NAMGYU: what is this?
+        n_regression_metrics = 4  # NAMGYU: what is this?
         # NAMGYU: I think n_xxx or xxx_count is a more standard name than xxx_num
-        region_num = 19  # NAMGYU: is this needed?
-        leadtime_num = 67  # NAMGYU: is this needed?
-        grid_num = 67 * 82  # NAMGYU: is this needed?
+        # region_num = 19  # NAMGYU: is this needed?
+        # leadtime_num = 67  # NAMGYU: is this needed?
+        # grid_num = 67 * 82  # NAMGYU: is this needed?
 
-        self.class_boundaries = args.class_boundaries  # TODO: define at args?
-        # NAMGYU: We previously used `thresholds`
-        # NAMGYU: Is `class_boundaries` better?
-        # NAMGYU: How about `evaluation_thresholds`?
+        self.evaluation_thresholds = args.evaluation_threhsolds
 
         # NAMGYU: I think these names are unclear
         # NAMGYU: I don't know why these are in this format. Let's discuss
-        self.regional_regression_output = np.zeros((metric_regression_num))  # / self.total_num
-        self.regional_classification_output = np.zeros((4, 4))  # / self.total_num
-        self.grid_classification_output = np.zeros((4, 4))  # / self.total_num
+        # self.regional_regression_output = np.zeros((n_regression_metrics))  # / self.total_num
+        # self.regional_classification_output = np.zeros((4, 4))  # / self.total_num
+        # self.grid_classification_output = np.zeros((4, 4))  # / self.total_num
 
         # NAMGYU: these names are unclear
-        self.regional_num = 0
-        self.grid_num = 0
+        # self.regional_num = 0
+        # self.grid_num = 0
 
         self.regional_df = pd.DataFrame(columns=['time', 'region', 'GT', 'pred'])
         self.regional_df = pd.DataFrame(columns=['time', 'region', 'ground_truth', 'prediction'])
         # NAMGYU: fixed to use full wods
 
-        self.grid_df = pd.DataFrame(columns=['time', 'region', 'conf'])  # NAMGYU: what datatype is conf?
+        self.grid_df = pd.DataFrame(columns=['time', 'region', 'conf'])
         # NAMGYU: please use full words here as well
 
         self.regression_to_idx = {
@@ -81,19 +78,20 @@ class MetricsCalculator:
         self.calculate_rmse(prediction, ground_truth, leadtime_idx)
 
         # convert into categorical
-        categorical_prediction = continuous_to_categorical(prediction, self.class_boundaries)
-        categorical_ground_truth = continuous_to_categorical(ground_truth, self.class_boundaries)
+        categorical_prediction = continuous_to_categorical(prediction, self.evaluation_thresholds)
+        categorical_ground_truth = continuous_to_categorical(ground_truth, self.evaluation_thresholds)
 
         # classification
         classification_output = self.calculate_confusion_matrix(categorical_prediction, categorical_ground_truth)
         self.regional_classification_output += classification_output
 
         # save into dataframe
+        timestamp = [t.to_datetime() for t in timestamp] * 19
         self.regional_df = self.regional_df.append(
             # NAMGYU: changed the column names to full words
             # NAMGYU: you should name pandas columns like you would name variables
             pd.DataFrame({
-                'timestamp': [t.to_datetime() for t in timestamp for _ in range(19)],
+                'timestamp': timestamp,
                 'region': list(range(1, 20)) * len(timestamp),  # NAMGYU: are regions 1-indexed?
                 'ground_truth': ground_truth.tolist(),
                 'prediction': prediction.tolist(),
@@ -110,12 +108,12 @@ class MetricsCalculator:
         :param ground_truth:
         :return:
         """
-        b = len(timestamp)  # NAMGYU: don't use uppercase variables like this
+        b = len(timestamp)
         prediction = prediction.reshape(b, -1)
         ground_truth = ground_truth.reshape(b, -1)
 
         # convert into categorical  # NAMGYU: this comment is unnecessary (the method name is self-explanatory - this is good)
-        categorical_prediction = continuous_to_categorical(prediction, self.class_boundaries)
+        categorical_prediction = continuous_to_categorical(prediction, self.evaluation_thresholds)
 
         # classification
         classification_output = self.calculate_confusion_matrix(categorical_prediction, ground_truth)
@@ -174,6 +172,7 @@ class MetricsCalculator:
     def calculate_nme(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
         nme = np.sum(np.abs(output - target), axis=1) / np.sum(target, axis=1)
         self.add_metrics(self.regression_to_idx['nme'], nme, leadtime_idx)
+
 
     def calculate_r(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
         r = np.sum(output * target, axis=1) / np.sqrt(np.sum(output ** 2, axis=1) * np.sum(target ** 2, axis=1))
