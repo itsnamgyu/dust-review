@@ -4,6 +4,7 @@ from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error
 from typing import Dict
 
+
 def calculate_confusion_matrix(prediction: np.array, target: np.array, n_classes=4) -> np.array:
     """
     Calculate confusion matrix.
@@ -47,9 +48,11 @@ def calculate_confusion_matrix(prediction: np.array, target: np.array, n_classes
 
     return confusion_matrices
 
-def calculate_classification_metrics(cm: np.array, binary_classification_index: int=2) -> Dict[str, float]:
+
+def calculate_classification_metrics(cm: np.array, binary_classification_index: int = 2) -> Dict[str, float]:
     """
-    Print classification metrics for confusion matrix (self.grid_df and self.regional_df)
+    Print classification metrics for confusion matrix. This is used by MetricTracker for metrics on regional and grid
+    predictions.
 
     Args:
         cm: confusion matrix. ndarray of shape (n_samples, n_classes, n_classes)
@@ -58,7 +61,7 @@ def calculate_classification_metrics(cm: np.array, binary_classification_index: 
     Returns:
         A dictionary containing classification metrics.
     """
-    
+
     bindex = binary_classification_index
     tn = np.sum(cm[:, :bindex, :bindex])
     fp = np.sum(cm[:, :bindex, bindex:])
@@ -73,6 +76,7 @@ def calculate_classification_metrics(cm: np.array, binary_classification_index: 
     f1 = 2 * pod * (1 - far) / (pod + (1 - far))
 
     return {'acc': acc, 'hard_acc': hard_acc, 'far': far, 'pod': pod, 'f1': f1}
+
 
 def calculate_regression_metrics(predictions: np.array, target: np.array) -> Dict[str, float]:
     """

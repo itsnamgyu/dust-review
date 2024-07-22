@@ -31,13 +31,17 @@ class MetricTracker:
         args: DictConfig
     ) -> None:
         self.evaluation_thresholds = args.evaluation_thresholds
-        self.binary_classification_index = 2  # index of value 나쁨 # TODO  # NAMGYU: do what?
+        self.binary_classification_index = 2  # index of 나쁨
+        self.n_classes = len(self.evaluation_thresholds) + 1
+        if len(self.evaluation_thresholds) != 3:
+            raise NotImplementedError("Only 3 thresholds are supported for now. Please check"
+                                      "self.binary_classification_index if the evaluation protocol has changed.")
 
         self.regional_df = pd.DataFrame(
             columns=['origin', 'lead_time', 'region', 'target', 'prediction', 'categorical_target',
                      'categorical_prediction'])
         self.grid_df = pd.DataFrame(
-            columns=['origin', 'lead_time', 'region', 
+            columns=['origin', 'lead_time', 'region',
                      't0p0', 't0p1', 't0p2', 't0p3',
                      't1p0', 't1p1', 't1p2', 't1p3',
                      't2p0', 't2p1', 't2p2', 't2p3',
@@ -55,7 +59,6 @@ class MetricTracker:
 
         Returns:
         """
-
         categorical_prediction = np.digitize(prediction, bins=self.evaluation_thresholds)
         categorical_target = np.digitize(target, bins=self.evaluation_thresholds)
 
@@ -103,64 +106,59 @@ class MetricTracker:
         # calculate confusion matrix    
         classification_output = calculate_confusion_matrix(categorical_prediction.reshape(b * 19, -1),
                                                            categorical_target.reshape(b * 19, -1),
-                                                           n_classes=len(self.evaluation_thresholds) + 1)  # (B*R, 4*4)
+                                                           n_classes=self.n_classes)  # (B*R, 4*4)
 
         # save into dataframe
         origins = [t.origin for t in timestamp for _ in range(19)]
         lead_times = [t.lead_time for t in timestamp for _ in range(19)]
         regions = list(range(19)) * b
-
         classification_output = classification_output.reshape(b, 19, 4, 4)
-
         new_data = pd.DataFrame({
             'origin': origins,
             'lead_time': lead_times,
             'region': regions,
-            't0p0': classification_output[:, :, 0, 0].flatten().tolist(),
-            't0p1': classification_output[:, :, 0, 1].flatten().tolist(),
-            't0p2': classification_output[:, :, 0, 2].flatten().tolist(),
-            't0p3': classification_output[:, :, 0, 3].flatten().tolist(),
-            't1p0': classification_output[:, :, 1, 0].flatten().tolist(),
-            't1p1': classification_output[:, :, 1, 1].flatten().tolist(),
-            't1p2': classification_output[:, :, 1, 2].flatten().tolist(),
-            't1p3': classification_output[:, :, 1, 3].flatten().tolist(),
-            't2p0': classification_output[:, :, 2, 0].flatten().tolist(),
-            't2p1': classification_output[:, :, 2, 1].flatten().tolist(),
-            't2p2': classification_output[:, :, 2, 2].flatten().tolist(),
-            't2p3': classification_output[:, :, 2, 3].flatten().tolist(),
-            't3p0': classification_output[:, :, 3, 0].flatten().tolist(),
-            't3p1': classification_output[:, :, 3, 1].flatten().tolist(),
-            't3p2': classification_output[:, :, 3, 2].flatten().tolist(),
-            't3p3': classification_output[:, :, 3, 3].flatten().tolist()
-        })  # NAMGYU: let's shorten this with a for-loop
+        })
+        for i in range(4):
+            for j in range(4):
+                new_data[f't{i}p{j}'] = classification_output[:, :, i, j].flatten().tolist()
         self.grid_df = pd.concat([self.grid_df, new_data], ignore_index=True)
 
     def print_metrics(self):
         """
-        Print regression and classification metrics based on self.regional_df
+        Print metrics
+        - Regional regression + classification metrics based on self.regional_df
+        - Grid classification metrics based on self.grid_df
         """
-        # REGIONAL
-        # regression
-        reg_m = calculate_regression_metrics(np.array(self.regional_df['categorical_prediction']), 
-                                             np.array(self.regional_df['categorical_target']))
-        print(f"nmb: {round(reg_m['nmb'], 2)}, nme: {round(reg_m['nme'], 2)}, r: {round(reg_m['r'], 2)}, rmse: {round(reg_m['rmse'], 2)}")
+        # calculate regional regression metrics
+        regional_r_metrics = calculate_regression_metrics(np.array(self.regional_df['categorical_prediction']),
+                                                          np.array(self.regional_df['categorical_target']))
 
-        # classification
+        # calculate regional classification metrics
         categorical_predictions = np.array(self.regional_df['categorical_prediction']).reshape(-1, 1).astype(int)
         categorical_targets = np.array(self.regional_df['categorical_target']).reshape(-1, 1).astype(int)
-        cm = calculate_confusion_matrix(categorical_predictions, categorical_targets, n_classes=len(self.evaluation_thresholds)+1)
-        cat_m = calculate_classification_metrics(cm, 
-                                                 binary_classification_index=self.binary_classification_index)
-        print(f"acc: {round(cat_m['acc'], 2)}, hard_acc: {round(cat_m['hard_acc'], 2)}, far: {round(cat_m['far'], 2)}, pod: {round(cat_m['pod'], 2)}, f1: {round(cat_m['f1'], 2)}")
+        cm = calculate_confusion_matrix(categorical_predictions, categorical_targets,
+                                        n_classes=len(self.evaluation_thresholds) + 1)
+        regional_c_metrics = calculate_classification_metrics(
+            cm, binary_classification_index=self.binary_classification_index)
 
-        # GRID
-        # classification
-        columns_to_convert = ['t0p0', 't0p1', 't0p2', 't0p3', 
-                              't1p0', 't1p1', 't1p2', 't1p3', 
-                              't2p0', 't2p1', 't2p2', 't2p3', 
+        # calculate grid classification metrics
+        columns_to_convert = ['t0p0', 't0p1', 't0p2', 't0p3',
+                              't1p0', 't1p1', 't1p2', 't1p3',
+                              't2p0', 't2p1', 't2p2', 't2p3',
                               't3p0', 't3p1', 't3p2', 't3p3']
         grid_df = self.grid_df[columns_to_convert].to_numpy().reshape(-1, 4, 4)
-        cat_m = calculate_classification_metrics(grid_df, 
-                                                 binary_classification_index=self.binary_classification_index)
-        print(f"acc: {round(cat_m['acc'], 2)}, hard_acc: {round(cat_m['hard_acc'], 2)}, far: {round(cat_m['far'], 2)}, pod: {round(cat_m['pod'], 2)}, f1: {round(cat_m['f1'], 2)}")
-        
+        grid_c_metrics = calculate_classification_metrics(
+            grid_df, binary_classification_index=self.binary_classification_index)
+
+        def print_metrics(title, metrics):
+            print(f" {title} ".center(80, "="))
+            for i, (key, value) in enumerate(metrics.items()):
+                print(f"{key}: {value:6.2f}", end="    ")
+                if (i + 1) % 3 == 0:
+                    print()
+            if len(metrics) % 3 != 0:
+                print()
+
+        print_metrics("Regional regression metrics", regional_r_metrics)
+        print_metrics("Regional classification metrics", regional_c_metrics)
+        print_metrics("Grid classification metrics", grid_c_metrics)
