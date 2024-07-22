@@ -1,14 +1,15 @@
 import numpy as np
 import numpy.ma as ma
 import omegaconf
-from typing import Set, Dict
+from typing import Set, Dict, List
 import pandas as pd
 
+from sklearn.metrics import mean_squared_error
+from scipy.stats import pearsonr
+
 from util.time.timestamp import Timestamp
-from util.convert import categorial_to_continuous, continuous_to_categorical
 
-import torch
-
+from metrics import calculate_confusion_matrix
 
 class DictConfig(omegaconf.DictConfig):
     n_regions: int
@@ -20,179 +21,146 @@ class MetricTracker:
         self,
         args: DictConfig
     ) -> None:
-        n_regression_metrics = 4  # NAMGYU: what is this?
-        # NAMGYU: I think n_xxx or xxx_count is a more standard name than xxx_num
-        # region_num = 19  # NAMGYU: is this needed?
-        # leadtime_num = 67  # NAMGYU: is this needed?
-        # grid_num = 67 * 82  # NAMGYU: is this needed?
-
+        # n_regression_metrics = 4
         self.evaluation_thresholds = args.evaluation_threhsolds
+        self.evaluation_boundary = 2 # index of value 나쁨 # TODO
 
-        # NAMGYU: I think these names are unclear
-        # NAMGYU: I don't know why these are in this format. Let's discuss
-        # self.regional_regression_output = np.zeros((n_regression_metrics))  # / self.total_num
-        # self.regional_classification_output = np.zeros((4, 4))  # / self.total_num
-        # self.grid_classification_output = np.zeros((4, 4))  # / self.total_num
+        self.regional_df = pd.DataFrame(columns=['date', 'leadtime', 'region', 'target_cont', 'predict_cont', 'target_cate', 'predict_cate'])
+        self.grid_df = pd.DataFrame(columns=['date', 'leadtime', 'region', 'g0p0', 'g0p1', 'g0p2', 'g0p3', 'g1p0', 'g1p1', 'g1p2', 'g1p3', 'g2p0', 'g2p1', 'g2p2', 'g2p3', 'g3p0', 'g3p1', 'g3p2', 'g3p3'])
 
-        # NAMGYU: these names are unclear
-        # self.regional_num = 0
-        # self.grid_num = 0
+        self.device = args.device
 
-        self.regional_df = pd.DataFrame(columns=['time', 'region', 'GT', 'pred'])
-        self.regional_df = pd.DataFrame(columns=['time', 'region', 'ground_truth', 'prediction'])
-        # NAMGYU: fixed to use full wods
-
-        self.grid_df = pd.DataFrame(columns=['time', 'region', 'conf'])
-        # NAMGYU: please use full words here as well
-
-        self.regression_to_idx = {
-            'nmb': 0,
-            'nme': 1,
-            'r': 2,
-            'rmse': 3
-        }
-
-    def add_regional_predictions(self, timestamp: list[Timestamp], prediction: np.array,
-                                 ground_truth: np.array):  # continuous input -> regression, classification
-        # NAMGYU: I think all variable names should be plural (since they are / (can be) batched)
+    def add_regional_predictions(self, timestamp: List[Timestamp], prediction: np.array, target: np.array):  # continuous input -> regression, classification
         """
-        NAMGYU: can you add some explanations / array shapes?
+        Add raw regional predictions to self.regional_df
 
-
-        :param timestamp:
-        :param prediction:
-        :param ground_truth:
-        :return:
+        :param timestamp: list of timestamps
+        :param prediction: np.array of shape (B, N)
+        :param target: np.array of shape (B, N)
         """
 
-        leadtime_idx = np.array([t.lead_time for t in timestamp]) - 6
-
-        # regression
-        # NAMGYU: does leadtime index need to go here?
-        # NAMGYU: do these need to be functions?
-        # NAMGYU: the function names are misleading. these functions calculate the metrics and then call
-        #         add_metrics. I think this process is too complicated
-        self.calculate_nmb(prediction, ground_truth, leadtime_idx)
-        self.calculate_nme(prediction, ground_truth, leadtime_idx)
-        self.calculate_r(prediction, ground_truth, leadtime_idx)
-        self.calculate_rmse(prediction, ground_truth, leadtime_idx)
-
-        # convert into categorical
-        categorical_prediction = continuous_to_categorical(prediction, self.evaluation_thresholds)
-        categorical_ground_truth = continuous_to_categorical(ground_truth, self.evaluation_thresholds)
-
-        # classification
-        classification_output = self.calculate_confusion_matrix(categorical_prediction, categorical_ground_truth)
-        self.regional_classification_output += classification_output
+        categorical_prediction = np.digitize(prediction, bins=self.evaluation_thresholds)
+        categorical_target = np.digitize(target, bins=self.evaluation_thresholds)
 
         # save into dataframe
-        timestamp = [t.to_datetime() for t in timestamp] * 19
-        self.regional_df = self.regional_df.append(
-            # NAMGYU: changed the column names to full words
-            # NAMGYU: you should name pandas columns like you would name variables
-            pd.DataFrame({
-                'timestamp': timestamp,
-                'region': list(range(1, 20)) * len(timestamp),  # NAMGYU: are regions 1-indexed?
-                'ground_truth': ground_truth.tolist(),
-                'prediction': prediction.tolist(),
-                'ground_truth_class': categorical_ground_truth.tolist(),
-                'prediction_class': categorical_prediction.tolist()
-            }))
+        b = len(timestamp)
+        dates = [t.origin for t in timestamp for _ in range(19)]
+        lead_times = [t.lead_time for t in timestamp for _ in range(19)]
+        regions = list(range(19)) * b
 
-    def add_grid_predictions(self, timestamp: list[Timestamp], prediction: np.array,
-                             ground_truth: np.array):  # continuous input -> classification
+        new_data = pd.DataFrame({
+            'date': dates,
+            'leadtime': lead_times,
+            'region': regions, 
+            'target_cont': target.flatten().tolist(),
+            'predict_cont': prediction.flatten().tolist(),
+            'target_cate': categorical_target.flatten().tolist(),
+            'predict_cate': categorical_prediction.flatten().tolist()
+        })
+        self.regional_df = pd.concat([self.regional_df, new_data], ignore_index=True)
+
+    def add_grid_predictions(self, timestamp: List[Timestamp], prediction: np.array, target: np.array):  # continuous input -> classification
         """
-        NAMGYU: can you add some explanations / array shapes?
-        :param timestamp:
-        :param prediction:
-        :param ground_truth:
-        :return:
+        Add confusion matrix of grid predictions to self.grid_df
+
+        :param timestamp: list of timestamps
+        :param prediction: np.array of shape (B, W, H)
+        :param target: np.array of shape (B, W, H)
         """
         b = len(timestamp)
         prediction = prediction.reshape(b, -1)
-        ground_truth = ground_truth.reshape(b, -1)
+        target = target.reshape(b, -1)
 
-        # convert into categorical  # NAMGYU: this comment is unnecessary (the method name is self-explanatory - this is good)
-        categorical_prediction = continuous_to_categorical(prediction, self.evaluation_thresholds)
+        categorical_prediction = np.digitize(prediction, bins=self.evaluation_thresholds)
+        categorical_target = np.digitize(target, bins=self.evaluation_thresholds)
+
+        # load regional masks into shape of (19, -1)
+        masks = np.random.randint(2, size=(19, 83, 67)) # TODO GET_MASK_HERE # (M, W, H) # TODO -1 for missing value
+        masks = masks.reshape(19, -1)
+
+        # split the prediction and target into 19 regions
+        categorical_prediction = np.repeat(categorical_prediction[:, np.newaxis, :], 19, axis=1) # (B, R, W*H)
+        categorical_target = categorical_target[:, np.newaxis, :] * masks[np.newaxis, :, :] # (B, R, W*H) 
+
+        # calculate confusion matrix    
+        classification_output = calculate_confusion_matrix(categorical_prediction.reshape(b*19, -1), categorical_target.reshape(b*19, -1),
+                                                           n_category=len(self.evaluation_thresholds)+1, device=self.device) # (B*R, 4*4)
+
+        # save into dataframe
+        dates = [t.origin for t in timestamp for _ in range(19)]
+        lead_times = [t.lead_time for t in timestamp for _ in range(19)]
+        regions = list(range(19)) * b
+
+        classification_output = classification_output.reshape(b, 19, 4, 4)
+
+        new_data = pd.DataFrame({
+                'date': dates,
+                'leadtime': lead_times,
+                'region': regions,
+                'g0p0': classification_output[:, :, 0, 0].flatten().tolist(),
+                'g0p1': classification_output[:, :, 0, 1].flatten().tolist(),
+                'g0p2': classification_output[:, :, 0, 2].flatten().tolist(),
+                'g0p3': classification_output[:, :, 0, 3].flatten().tolist(),
+                'g1p0': classification_output[:, :, 1, 0].flatten().tolist(),
+                'g1p1': classification_output[:, :, 1, 1].flatten().tolist(),
+                'g1p2': classification_output[:, :, 1, 2].flatten().tolist(),
+                'g1p3': classification_output[:, :, 1, 3].flatten().tolist(),
+                'g2p0': classification_output[:, :, 2, 0].flatten().tolist(),
+                'g2p1': classification_output[:, :, 2, 1].flatten().tolist(),
+                'g2p2': classification_output[:, :, 2, 2].flatten().tolist(),
+                'g2p3': classification_output[:, :, 2, 3].flatten().tolist(),
+                'g3p0': classification_output[:, :, 3, 0].flatten().tolist(),
+                'g3p1': classification_output[:, :, 3, 1].flatten().tolist(),
+                'g3p2': classification_output[:, :, 3, 2].flatten().tolist(),
+                'g3p3': classification_output[:, :, 3, 3].flatten().tolist()
+            })
+        self.grid_df = pd.concat([self.grid_df, new_data], ignore_index=True)
+
+    def save_df(self, df: pd.DataFrame, path: str) -> None:
+        """
+        Save dataframe to path
+        """
+        df.to_csv(path, index=False)
+
+    def print_raw_data(self, raw_data: pd.DataFrame):
+        """
+        Print regression and classification metrics for raw data (self.regional_df)
+        :param raw_data: pd.DataFrame;  self.regional_df
+        """
+        # regression
+        target = np.array(raw_data['target_cont'])
+        predictions = np.array(raw_data['predict_cont'])
+        
+        nmb = np.sum(predictions - target) / np.sum(target)
+        nme = np.sum(np.abs(predictions - target)) / np.sum(np.abs(target))
+        r, _ = pearsonr(predictions, target)
+        rmse = np.sqrt(mean_squared_error(target, predictions))
+
+        print(f"nmb: {round(nmb, 2)}, nme: {round(nme, 2)}, r: {round(r, 2)}, rmse: {round(rmse, 2)}")
 
         # classification
-        classification_output = self.calculate_confusion_matrix(categorical_prediction, ground_truth)
-        self.grid_classification_output += classification_output
+        predictions_cate = np.array(raw_data['predict_cate']).reshape(-1, 1).astype(int) # reshape(1, -1)
+        target_cate = np.array(raw_data['target_cate']).reshape(-1, 1).astype(int) # reshape(1, -1)
+        confusion_matrix = calculate_confusion_matrix(predictions_cate, target_cate, n_category=len(self.evaluation_thresholds)+1, device=self.device)
+        
+        self.print_confusion_matrix(confusion_matrix)
 
-        # save into data
+    def print_confusion_matrix(self, cm: np.array, bound:int=2):
+        """
+        Print classification metrics for confusion matrix (self.grid_df and self.regional_df)
+        :param cm: np.array of shape (B, n_category, n_category)
+        """
+        # classification
+        g01p01 = np.sum(cm[:, :bound, :bound])
+        g01p23 = np.sum(cm[:, :bound, bound:])
+        g23p01 = np.sum(cm[:, bound:, :bound])
+        g23p23 = np.sum(cm[:, bound:, bound:])
+        total = np.sum(cm)
 
-    def save_df(self, path: str) -> None:
-        self.regional_df.to_csv(path, index=False)
+        acc = np.sum(cm[:, 0, 0] + cm[:, 1, 1] + cm[:, 2, 2] + cm[:, 3, 3]) / total
+        hard_acc = np.sum(cm[:, 2, 2] + cm[:, 3, 3]) / (g23p01 + g23p23)
+        far = g01p23 / (g01p23 + g23p23)
+        pod = g23p23 / (g23p23 + g23p01)
+        f1 = 2 * pod * (1 - far) / (pod + (1 - far))
 
-    def print_result(self) -> Dict:
-        # average the metrics and print the regional result
-        metrics = {}
-        metrics['nmb'] = self.regional_regression_output[self.regression_to_idx['nmb']] / self.grid_num
-        metrics['nme'] = self.regional_regression_output[self.regression_to_idx['nme']] / self.grid_num
-        metrics['r'] = self.regional_regression_output[self.regression_to_idx['r']] / self.grid_num
-        metrics['rmse'] = self.regional_regression_output[self.regression_to_idx['rmse']] / self.grid_num
-
-        metrics['acc'] = sum(self.regional_classification_output[i, i] for i in range(4)).sum() / np.sum(self.grid_num)
-        metrics['acc_hard'] = np.sum(
-            self.regional_classification_output[2, 2] + self.regional_classification_output[3, 3]) / np.sum(
-            self.regional_classification_output[2:, :])
-        metrics['far'] = np.sum(self.regional_classification_output[:2, 2:]) / np.sum(
-            self.regional_classification_output[:, 2:])
-        metrics['pod'] = np.sum(self.regional_classification_output[2:, 2:]) / np.sum(
-            self.regional_classification_output[2:, :])
-        metrics['f1'] = 2 * metrics['pod'] * (1 - metrics['far']) / (metrics['pod'] + (1 - metrics['far']))
-
-        print(f"Regional result: {metrics}")
-
-        # average the metrics and print the grid result
-        metrics = {}
-        metrics['acc'] = sum(self.grid_classification_output[i, i] for i in range(4)).sum() / np.sum(self.grid_num)
-        metrics['acc_hard'] = np.sum(
-            self.grid_classification_output[2, 2] + self.grid_classification_output[3, 3]) / np.sum(
-            self.grid_classification_output[2:, :])
-        metrics['far'] = np.sum(self.grid_classification_output[:2, 2:]) / np.sum(
-            self.grid_classification_output[:, 2:])
-        metrics['pod'] = np.sum(self.grid_classification_output[2:, 2:]) / np.sum(
-            self.grid_classification_output[2:, :])
-        metrics['f1'] = 2 * metrics['pod'] * (1 - metrics['far']) / (metrics['pod'] + (1 - metrics['far']))
-
-        print(f"Grid result: {metrics}")
-
-    #######################################################
-    # metric calculation
-    #######################################################
-
-    def add_metrics(self, metric_idx: list, metric_result: np.array, leadtime_idx: list) -> None:
-        self.regional_regression_output[metric_idx, leadtime_idx] += metric_result
-
-    def calculate_nmb(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
-        nmb = np.sum(output - target, axis=1) / np.sum(target, axis=1)
-        self.add_metrics(self.regression_to_idx['nmb'], nmb, leadtime_idx)
-
-    def calculate_nme(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
-        nme = np.sum(np.abs(output - target), axis=1) / np.sum(target, axis=1)
-        self.add_metrics(self.regression_to_idx['nme'], nme, leadtime_idx)
-
-
-    def calculate_r(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
-        r = np.sum(output * target, axis=1) / np.sqrt(np.sum(output ** 2, axis=1) * np.sum(target ** 2, axis=1))
-        self.add_metrics(self.regression_to_idx['r'], r, leadtime_idx)
-
-    def calculate_rmse(self, output: np.array, target: np.array, leadtime_idx: list) -> np.array:
-        rmse = np.sqrt(np.sum((output - target) ** 2, axis=1) / target.shape[1])
-        self.add_metrics(self.regression_to_idx['rmse'], rmse, leadtime_idx)
-
-    def calculate_confusion_matrix(self, output: np.array, target: np.array, leadtime_idx: list = None) -> np.array:
-        B, _ = output.shape
-        classification_output = np.zeros((B, 4, 4), dtype=int)
-
-        pred_indices = output[:, :, None]  # Shape (B, N, 1)
-        gt_indices = target[:, None, :]  # Shape (B, 1, N)
-
-        # Broadcast batch indices
-        batch_indices = np.arange(B)[:, None, None]  # Shape (B, 1, 1)
-
-        # Use numpy's add.at to accumulate counts in the result matrix
-        np.add.at(classification_output, (batch_indices, pred_indices, gt_indices), 1)
-
-        return classification_output
+        print(f"acc: {round(acc, 2)}, hard_acc: {round(hard_acc, 2)}, far: {round(far, 2)}, pod: {round(pod, 2)}, f1: {round(f1, 2)}")
