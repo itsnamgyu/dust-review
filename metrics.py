@@ -3,6 +3,7 @@ import torch
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error
 from typing import Dict
+import pandas as pd
 
 def calculate_confusion_matrix(prediction: np.array, target: np.array, n_classes=4) -> np.array:
     """
@@ -90,8 +91,26 @@ def calculate_regression_metrics(predictions: np.array, target: np.array) -> Dic
     """
 
     nmb = np.sum(predictions - target) / np.sum(target)
-    nme = np.sum(np.abs(predictions - target)) / np.sum(np.abs(target))
+    nme = np.sum(np.abs(predictions - target)) / np.sum(target)
     r, _ = pearsonr(predictions, target)
-    rmse = np.sqrt(mean_squared_error(target, predictions))
+    rmse = np.sqrt(mean_squared_error(target, predictions)) # np.sqrt(np.mean((predictions-target)**2))
 
     return {'nmb': nmb, 'nme': nme, 'r': r, 'rmse': rmse}
+
+def convert_confusion_df_to_array(confusion_df: pd.DataFrame) -> np.array:
+    """
+    Convert confusion matrix dataframe to numpy array.
+
+    Args:
+        df: confusion matrix pandas dataframe
+
+    Returns:
+        A numpy array of shape (n_samples, n_classes, n_classes) representing the confusion matrix.
+    """
+    columns_to_convert = ['t0p0', 't0p1', 't0p2', 't0p3', 
+                          't1p0', 't1p1', 't1p2', 't1p3', 
+                          't2p0', 't2p1', 't2p2', 't2p3', 
+                          't3p0', 't3p1', 't3p2', 't3p3']
+    confusion_array = confusion_df[columns_to_convert].to_numpy().reshape(-1, 4, 4)
+
+    return confusion_array

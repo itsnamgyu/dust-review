@@ -4,7 +4,7 @@ import numpy as np
 import omegaconf
 import pandas as pd
 
-from metrics import calculate_confusion_matrix, calculate_classification_metrics, calculate_regression_metrics
+from metrics import calculate_confusion_matrix, calculate_classification_metrics, calculate_regression_metrics, convert_confusion_df_to_array
 from util.time.timestamp import Timestamp
 
 
@@ -141,26 +141,24 @@ class MetricTracker:
         """
         # REGIONAL
         # regression
-        reg_m = calculate_regression_metrics(np.array(self.regional_df['categorical_prediction']), 
-                                             np.array(self.regional_df['categorical_target']))
-        print(f"nmb: {round(reg_m['nmb'], 2)}, nme: {round(reg_m['nme'], 2)}, r: {round(reg_m['r'], 2)}, rmse: {round(reg_m['rmse'], 2)}")
+        reg_m = calculate_regression_metrics(np.array(self.regional_df['prediction']), 
+                                             np.array(self.regional_df['target']))
+        
+        print("Regional Metrics")
+        print(f"nmb: {round(reg_m['nmb']*100, 2)}, nme: {round(reg_m['nme']*100, 2)}, r: {round(reg_m['r'], 2)}, rmse: {round(reg_m['rmse'], 2)}")
 
         # classification
         categorical_predictions = np.array(self.regional_df['categorical_prediction']).reshape(-1, 1).astype(int)
         categorical_targets = np.array(self.regional_df['categorical_target']).reshape(-1, 1).astype(int)
-        cm = calculate_confusion_matrix(categorical_predictions, categorical_targets, n_classes=len(self.evaluation_thresholds)+1)
-        cat_m = calculate_classification_metrics(cm, 
+        conf_arr = calculate_confusion_matrix(categorical_predictions, categorical_targets, n_classes=len(self.evaluation_thresholds)+1)
+        cat_m = calculate_classification_metrics(conf_arr, 
                                                  binary_classification_index=self.binary_classification_index)
-        print(f"acc: {round(cat_m['acc'], 2)}, hard_acc: {round(cat_m['hard_acc'], 2)}, far: {round(cat_m['far'], 2)}, pod: {round(cat_m['pod'], 2)}, f1: {round(cat_m['f1'], 2)}")
-
+        print(f"acc: {round(cat_m['acc']*100, 2)}, hard_acc: {round(cat_m['hard_acc']*100, 2)}, far: {round(cat_m['far']*100, 2)}, pod: {round(cat_m['pod']*100, 2)}, f1: {round(cat_m['f1'], 2)}\n")
         # GRID
         # classification
-        columns_to_convert = ['t0p0', 't0p1', 't0p2', 't0p3', 
-                              't1p0', 't1p1', 't1p2', 't1p3', 
-                              't2p0', 't2p1', 't2p2', 't2p3', 
-                              't3p0', 't3p1', 't3p2', 't3p3']
-        grid_df = self.grid_df[columns_to_convert].to_numpy().reshape(-1, 4, 4)
-        cat_m = calculate_classification_metrics(grid_df, 
+        conf_arr = convert_confusion_df_to_array(self.grid_df)
+        cat_m = calculate_classification_metrics(conf_arr, 
                                                  binary_classification_index=self.binary_classification_index)
-        print(f"acc: {round(cat_m['acc'], 2)}, hard_acc: {round(cat_m['hard_acc'], 2)}, far: {round(cat_m['far'], 2)}, pod: {round(cat_m['pod'], 2)}, f1: {round(cat_m['f1'], 2)}")
+        print("Grid Metrics")
+        print(f"acc: {round(cat_m['acc']*100, 2)}, hard_acc: {round(cat_m['hard_acc']*100, 2)}, far: {round(cat_m['far']*100, 2)}, pod: {round(cat_m['pod']*100, 2)}, f1: {round(cat_m['f1'], 2)}")
         
